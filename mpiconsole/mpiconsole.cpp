@@ -203,15 +203,17 @@ void task24(int rank, int size) {
 
 void task25(int rank, int size) {
     int n = 0;
-    int start = 10;
-    int end = 20;
-    vector<double> A, B;
+    int blockSize = 0;
+    vector<double> localA, localB, localC;
+    vector<double> A, B, C;
 
     if (rank == 0) {
         cout << "Matrix size n: ";
         cin >> n;
+        blockSize = n * n / size;
         A.resize(n * n);
         B.resize(n * n);
+        C.resize(n * n);
 
         cout << "A elems: " << endl;
         for (int i = 0; i < n * n; i++) {
@@ -223,48 +225,39 @@ void task25(int rank, int size) {
             cin >> B[i];
         }
 
-        // Распределяем размеры матриц
         MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        MPI_Scatter(A.data(), n * n / size, MPI_DOUBLE, nullptr, 0, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Scatter(B.data(), n * n / size, MPI_DOUBLE, nullptr, 0, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
     else {
         MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        
+        localA.resize(n * n / size);
+        localB.resize(n * n / size);
 
-        A.resize(n * n / size);
-        B.resize(n * n / size);
-
-        MPI_Scatter(nullptr, n * n / size, MPI_DOUBLE, A.data(), n * n / size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Scatter(nullptr, n * n / size, MPI_DOUBLE, B.data(), n * n / size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatter(A.data(), blockSize, MPI_DOUBLE, localA.data(), blockSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Scatter(B.data(), blockSize, MPI_DOUBLE, localB.data(), blockSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    // Создаем массив для локального результата
-    vector<double> localC(n * n / size, 0.0);
-    double* B_T = new double[n * n]; // Временная матрица для транспонированной B
+    localC.resize(n * n / size);
 
-    // Транспонируем матрицу B
+    vector<double> B_T(n * n);
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
-            B_T[j * n + i] = B[j * n + i]; // Транспонируем B для удобства доступа
+            B_T[j * n + i] = B[i * n + j];
         }
     }
 
-    // Умножаем локальные матрицы A на транспонированную B
-    for (int i = 0; i < n / size; i++) {
+    int localRows = blockSize / n; 
+    for (int i = 0; i < localRows; i++) {
         for (int j = 0; j < n; j++) {
             for (int k = 0; k < n; k++) {
-                localC[i * n + j] += A[i * n + k] * B_T[j * n + k];
+                localC[i * n + j] += localA[i * n + k] * B_T[j * n + k];
             }
         }
     }
 
-    // Сбор результатов в матрицу C на процессе 0
-    vector<double> C(n * n);
-    MPI_Gather(localC.data(), n * n / size, MPI_DOUBLE, C.data(), n * n / size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    // Процесс 0 выводит конечный результат
     if (rank == 0) {
-        cout << "Result C:" << endl;
+        MPI_Gather(localC.data(), n * n / size, MPI_DOUBLE, C.data(), n * n / size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        cout << "Result matrix C:" << endl;
         for (int i = 0; i < n; ++i) {
             for (int j = 0; j < n; ++j) {
                 cout << C[i * n + j] << " ";
@@ -275,6 +268,97 @@ void task25(int rank, int size) {
 }
 
 void task26(int rank, int size) {
+    char message[11] = "";
+
+    MPI_Comm new_comm;
+    int color = rank % 2;
+    MPI_Comm_split(MPI_COMM_WORLD, color, rank, &new_comm);
+
+    int new_rank, new_size;
+    MPI_Comm_rank(new_comm, &new_rank);
+    MPI_Comm_size(new_comm, &new_size);
+
+    if (rank == 0) {
+        while (true) {
+            cout << "Enter message: ";
+            cin >> message;
+            if (strlen(message) > 0 && strlen(message) <= 10) {
+                break;
+            }
+        }
+    }
+
+    if (rank % 2 == 0) {
+        MPI_Bcast(message, 11, MPI_CHAR, 0, new_comm);
+
+        cout << "MPI_COMM_WORLD: " << rank << " from " << size
+            << ". New comm: " << new_rank << " from " << new_size
+            << ". Message = " << message << endl;
+    }
+    else {
+        cout << "MPI_COMM_WORLD: " << rank << " from " << size
+            << ". New comm: no from no. Message = no" << endl;
+    }
+}
+
+void spawn_and_print_info(int rank, int size) {
+    // Вывод информации о процессе
+    std::cout << "I am " << rank << " process from " << size << " processes!" << std::endl;
+    if (rank == 0) {
+        std::cout << "My parent is none." << std::endl;
+    }
+    else {
+        std::cout << "My parent is " << 0 << std::endl;
+    }
+}
+
+void task27(int rank, int size) {
+
+    if (rank == 0) {
+        // Нулевой процесс запрашивает количество процессов для создания
+        int n;
+        cout << "Enter the number of processes to spawn: ";
+        cin >> n;
+
+        // Создаем массив для хранения информации о новых процессах
+        MPI_Comm intercomm;
+        vector<int> spawned_ranks(n);
+
+        // Запускаем n новых процессов
+        MPI_Comm_spawn("child", MPI_ARGV_NULL, n, MPI_INFO_NULL, 0, MPI_COMM_SELF, &intercomm, MPI_ERRCODES_IGNORE);
+
+        // Выводим информацию о родительских процессах
+        for (int i = 0; i < n; i++) {
+            spawned_ranks[i] = i; // Запоминаем номера новых процессов
+        }
+
+        // Ждем завершения всех новых процессов
+        MPI_Comm_free(&intercomm);
+    }
+    else {
+        // Все остальные процессы являются дочерними
+        int parent_rank = 0; // У всех дочерних процессов родитель - 0
+        cout << "I am " << rank << " process from " << size << " processes! My parent is " << parent_rank << "." << endl;
+    }
+}
+
+void task28(int rank, int size) {
+
+}
+
+void task29(int rank, int size) {
+
+}
+
+void task30(int rank, int size) {
+
+}
+
+void task31(int rank, int size) {
+
+}
+
+void task32(int rank, int size) {
 
 }
 
@@ -326,6 +410,24 @@ int main(int argc, char* argv[]) {
             break;
         case 26:
             task26(rank, size);
+            break;
+        case 27:
+            task27(rank, size);
+            break;
+        case 28:
+            task28(rank, size);
+            break;
+        case 29:
+            task29(rank, size);
+            break;
+        case 30:
+            task30(rank, size);
+            break;
+        case 31:
+            task31(rank, size);
+            break;
+        case 32:
+            task32(rank, size);
             break;
         default:
             std::cerr << "Неверный номер.\n";
