@@ -1,11 +1,12 @@
-﻿#include <omp.h>
+﻿#include <mpi.h>
+#include <omp.h>
 #include <iostream>
 #include <Windows.h>
 #include <vector>
 #include <iomanip>
 #include <limits>
 #include <numbers>
-#include <mpi.h>
+#include <mutex>
 
 using namespace std;
 
@@ -447,25 +448,65 @@ void task30(int rank, int size) {
     }
 }
 
-//void task31(int rank, int size, int n) {
-//    // Общее количество потоков
-//    int total_threads = n * size;
-//
-//    // Параллельный блок OpenMP
-//#pragma omp parallel num_threads(n)
-//    {
-//        int thread_id = omp_get_thread_num(); // Номер текущей нити
-//
-//        // Вывод информации о нити с принудительным сбросом буфера
-//        std::cout << "I am " << thread_id << " thread from " << rank
-//            << " process. Number of hybrid threads = " << total_threads << std::endl;
-//        std::cout.flush(); // Принудительно сбрасываем буфер вывода
-//    }
-//}
-//
-//void task32(int rank, int size) {
-//
-//}
+std::mutex cout_mutex;
+
+void task31(int rank, int size, int n) {
+    int total_threads = n * size;
+
+    // Параллельный блок OpenMP
+#pragma omp parallel num_threads(n)
+    {
+        int thread_id = omp_get_thread_num();
+        {
+            std::lock_guard<std::mutex> lock(cout_mutex);
+            std::cout << "I am " << thread_id << " thread from " << rank
+                << " process. Number of hybrid threads = " << total_threads << std::endl;
+        }
+    }
+}
+
+void task32(int rank, int size) {
+    unsigned int Nprec;
+
+    if (rank == 0) {
+        std::cout << "Enter precision: ";
+        std::cin >> Nprec;
+    }
+
+    MPI_Bcast(&Nprec, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+
+    int localN = Nprec / size;
+    int localStart = rank * localN;
+    int localEnd = (rank + 1) * localN;
+
+    if (rank == size - 1) {
+        localEnd = Nprec;
+    }
+
+    long double localSum = 0.0;
+
+    #pragma omp parallel
+    {
+        long double threadSum = 0.0;
+        long double h = 1.0 / Nprec;
+    #pragma omp for
+        for (int i = localStart; i < localEnd; i++) {
+            long double xi = (i + 0.5) * h; 
+            threadSum += 4.0 / (1.0 + xi * xi);
+        }
+    #pragma omp atomic
+        localSum += threadSum;
+    }
+
+    localSum *= (1.0 / Nprec);
+
+    long double totalSum = 0.0;
+    MPI_Reduce(&localSum, &totalSum, 1, MPI_LONG_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        std::cout << std::setprecision(15) << "Calculated value of pi: " << totalSum << std::endl;
+    }
+}
 
 int main(int argc, char* argv[]) {
     SetConsoleCP(1251);
@@ -528,12 +569,12 @@ int main(int argc, char* argv[]) {
         case 30:
             task30(rank, size);
             break;
-        /*case 31:
-            task31(rank, size, 2);
+        case 31:
+            task31(rank, size, 3);
             break;
         case 32:
             task32(rank, size);
-            break;*/
+            break;
         default:
             std::cerr << "Неверный номер.\n";
             break;
