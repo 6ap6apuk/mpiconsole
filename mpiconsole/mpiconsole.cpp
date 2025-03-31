@@ -1,7 +1,11 @@
-﻿#include "mpi.h"
+﻿#include <omp.h>
 #include <iostream>
 #include <Windows.h>
 #include <vector>
+#include <iomanip>
+#include <limits>
+#include <numbers>
+#include <mpi.h>
 
 using namespace std;
 
@@ -173,30 +177,57 @@ void task23(int rank, int size) {
     }
 }
 
-void calculatePartialSum(int localStart, int localEnd, float& partialSum) {
+float calculatePartialSum(int localStart, int localEnd) {
+    float partialSum = 0;
     for (int i = localStart; i < localEnd; i++) {
-        partialSum += (4 / (1 + pow((i + 0.5) * 1.0 / localEnd, 2))) / localEnd;
+        partialSum += 4 / (1 + pow((i + 0.5) * 1.0 / localEnd, 2));
     }
+    return partialSum;
+}
+
+double CalculatePi(int localStart, int localEnd, unsigned int totalN) {
+    double sum = 0.0;
+    double h = 1.0 / totalN;
+    for (int i = localStart; i < localEnd; i++) {
+        double xi = (i + 0.5) * h;
+        sum += 4.0 / (1.0 + xi * xi);
+    }
+    return sum * h;
 }
 
 void task24(int rank, int size) {
-    float massPi;
+    long double massPi = 0.0;
     int Nprec = 0;
 
     if (rank == 0) {
         cout << "Enter precision: ";
         cin >> Nprec;
+        if (Nprec <= 0) {
+            cerr << "Precision must be a positive integer." << endl;
+            MPI_Abort(MPI_COMM_WORLD, 1);
+        }
+        MPI_Bcast(&Nprec, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    }
+    else {
         MPI_Bcast(&Nprec, 1, MPI_INT, 0, MPI_COMM_WORLD);
     }
 
-    int localNprec = Nprec / size;
-    float localPartialPiSum = 0;
-    calculatePartialSum(rank * localNprec, (rank + 1) * localNprec, localPartialPiSum);
+    if (Nprec < size) {
+        cerr << "Precision must be greater than or equal to the number of processes." << endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
-    float globalSum = 0;
-    MPI_Reduce(&localPartialPiSum, &globalSum, 1, MPI_FLOAT, MPI_SUM, 0, MPI_COMM_WORLD);
+    int localNprec = Nprec / size;
+    int localStart = rank * localNprec;
+    int localEnd = (rank + 1) * localNprec;
+
+    long double localPartialPiSum = CalculatePi(localStart, localEnd, Nprec);
+
+    long double globalSum = 0.0;
+    MPI_Reduce(&localPartialPiSum, &globalSum, 1, MPI_LONG_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
     if (rank == 0) {
+        cout << std::fixed << std::setprecision(15);
         cout << "pi: " << globalSum << endl;
     }
 }
@@ -301,66 +332,140 @@ void task26(int rank, int size) {
     }
 }
 
-void spawn_and_print_info(int rank, int size) {
-    // Вывод информации о процессе
-    std::cout << "I am " << rank << " process from " << size << " processes!" << std::endl;
-    if (rank == 0) {
-        std::cout << "My parent is none." << std::endl;
-    }
-    else {
-        std::cout << "My parent is " << 0 << std::endl;
-    }
-}
-
 void task27(int rank, int size) {
 
     if (rank == 0) {
-        // Нулевой процесс запрашивает количество процессов для создания
         int n;
         cout << "Enter the number of processes to spawn: ";
         cin >> n;
 
-        // Создаем массив для хранения информации о новых процессах
         MPI_Comm intercomm;
         vector<int> spawned_ranks(n);
 
-        // Запускаем n новых процессов
-        MPI_Comm_spawn("child", MPI_ARGV_NULL, n, MPI_INFO_NULL, 0, MPI_COMM_SELF, &intercomm, MPI_ERRCODES_IGNORE);
+        MPI_Comm_spawn("consoleChild.exe", MPI_ARGV_NULL, n, MPI_INFO_NULL, 0, MPI_COMM_SELF, &intercomm, MPI_ERRCODES_IGNORE);
 
-        // Выводим информацию о родительских процессах
         for (int i = 0; i < n; i++) {
-            spawned_ranks[i] = i; // Запоминаем номера новых процессов
+            spawned_ranks[i] = i; 
         }
 
-        // Ждем завершения всех новых процессов
         MPI_Comm_free(&intercomm);
     }
     else {
-        // Все остальные процессы являются дочерними
-        int parent_rank = 0; // У всех дочерних процессов родитель - 0
-        cout << "I am " << rank << " process from " << size << " processes! My parent is " << parent_rank << "." << endl;
+        cout << "I am " << rank << " process from " << size << " processes! My parent is none." << endl;
     }
 }
 
 void task28(int rank, int size) {
+    double massPi = 0.0;
+    int Nprec = 0;
+    int localNprec = 0;
+    double localPartialPiSum = 0.0;
+    MPI_Request send_request, recv_request;
+    MPI_Status status;
 
+    if (rank == 0) {
+        cout << "Enter precision: ";
+        cin >> Nprec;
+        for (int i = 1; i < size; i++) {
+            MPI_Isend(&Nprec, 1, MPI_INT, i, 0, MPI_COMM_WORLD, &send_request);
+        }
+    }
+    else {
+        MPI_Irecv(&Nprec, 1, MPI_INT, 0, 0, MPI_COMM_WORLD, &recv_request);
+        MPI_Wait(&recv_request, &status);
+    }
+
+    localNprec = Nprec / size;
+    int localStart = rank * localNprec;
+    int localEnd = (rank + 1) * localNprec;
+
+    localPartialPiSum = CalculatePi(localStart, localEnd, Nprec);
+
+    if (rank == 0) {
+        massPi += localPartialPiSum;
+        for (int i = 1; i < size; i++) {
+            MPI_Irecv(&localPartialPiSum, 1, MPI_DOUBLE, i, 0, MPI_COMM_WORLD, &recv_request);
+            MPI_Wait(&recv_request, &status);
+            massPi += localPartialPiSum;
+        }
+        cout << "Final massPi= " << massPi << endl;
+    }
+    else {
+        MPI_Isend(&localPartialPiSum, 1, MPI_DOUBLE, 0, 0, MPI_COMM_WORLD, &send_request);
+    }
+}
+
+void countTimeForPi(int rank, int size, unsigned int Nprec) {
+    long double massPi = 0.0;
+
+    if (Nprec < size) {
+        cerr << "Precision must be greater than or equal to the number of processes." << endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
+    unsigned int localNprec = Nprec / size;
+    unsigned int remainder = Nprec % size; 
+
+    if (rank < remainder) {
+        localNprec += 1;
+    }
+
+    unsigned int localStart = rank * (Nprec / size) + (rank < remainder ? rank : remainder);
+    unsigned int localEnd = localStart + localNprec;
+
+    long double localPartialPiSum = CalculatePi(localStart, localEnd, Nprec);
+
+    long double globalSum = 0.0;
+    MPI_Reduce(&localPartialPiSum, &globalSum, 1, MPI_LONG_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        cout << std::fixed << std::setprecision(15);
+        cout << "pi: " << globalSum << endl;
+    }
 }
 
 void task29(int rank, int size) {
+    //unsigned int Nprec = 100;
+    //unsigned int Nprec = 10000000;
+    unsigned int Nprec = 4000000000;
 
+    MPI_Bcast(&Nprec, 1, MPI_UNSIGNED, 0, MPI_COMM_WORLD);
+
+    double startTime = MPI_Wtime();
+    countTimeForPi(rank, size, Nprec);
+    double endTime = MPI_Wtime();
+
+    if (rank == 0) {
+        cout << "Total time taken: " << (endTime - startTime) << " seconds" << endl;
+    }
 }
 
 void task30(int rank, int size) {
-
+    #pragma omp parallel for
+    for (int i = 0; i < 10; ++i) {
+        std::cout << "Process " << rank << ", thread " << omp_get_thread_num() << ": iteration " << i << std::endl;
+    }
 }
 
-void task31(int rank, int size) {
-
-}
-
-void task32(int rank, int size) {
-
-}
+//void task31(int rank, int size, int n) {
+//    // Общее количество потоков
+//    int total_threads = n * size;
+//
+//    // Параллельный блок OpenMP
+//#pragma omp parallel num_threads(n)
+//    {
+//        int thread_id = omp_get_thread_num(); // Номер текущей нити
+//
+//        // Вывод информации о нити с принудительным сбросом буфера
+//        std::cout << "I am " << thread_id << " thread from " << rank
+//            << " process. Number of hybrid threads = " << total_threads << std::endl;
+//        std::cout.flush(); // Принудительно сбрасываем буфер вывода
+//    }
+//}
+//
+//void task32(int rank, int size) {
+//
+//}
 
 int main(int argc, char* argv[]) {
     SetConsoleCP(1251);
@@ -423,12 +528,12 @@ int main(int argc, char* argv[]) {
         case 30:
             task30(rank, size);
             break;
-        case 31:
-            task31(rank, size);
+        /*case 31:
+            task31(rank, size, 2);
             break;
         case 32:
             task32(rank, size);
-            break;
+            break;*/
         default:
             std::cerr << "Неверный номер.\n";
             break;
