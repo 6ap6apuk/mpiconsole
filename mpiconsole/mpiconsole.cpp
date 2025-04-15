@@ -109,7 +109,7 @@ void task21(int rank, int size) {
         MPI_Irecv(&message, 1, MPI_INT, rank - 1, rank - 1, MPI_COMM_WORLD, &recv_request);
 
     MPI_Wait(&recv_request, &status);
-    printf("receive message '%d'\n", message);
+    printf("[%d]: receive message '%d'\n", rank, message);
 }
 
 void task22(int rank, int size) {
@@ -234,19 +234,26 @@ void task24(int rank, int size) {
 }
 
 void task25(int rank, int size) {
-    int n = 0;
-    int blockSize = 0;
-    vector<double> localA, localB, localC;
-    vector<double> A, B, C;
+    int n;
+    if (rank == 0) {
+        std::cout << "Input size of matrix: ";
+        std::cin >> n;
+    }
+
+    MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (n % size != 0) {
+        if (rank == 0) {
+            std::cerr << "ERROR! The size of the matrix should be a multiple of the number of processes." << std::endl;
+        }
+    }
+
+    int rows_per_process = n / size;
+
+    std::vector<int> A(n * n), B(n * n), C(n * n);
+    std::vector<int> local_A(rows_per_process * n), local_C(rows_per_process * n);
 
     if (rank == 0) {
-        cout << "Matrix size n: ";
-        cin >> n;
-        blockSize = n * n / size;
-        A.resize(n * n);
-        B.resize(n * n);
-        C.resize(n * n);
-
         cout << "A elems: " << endl;
         for (int i = 0; i < n * n; i++) {
             cin >> A[i];
@@ -256,45 +263,49 @@ void task25(int rank, int size) {
         for (int i = 0; i < n * n; i++) {
             cin >> B[i];
         }
-
-        MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
-    }
-    else {
-        MPI_Bcast(&n, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        
-        localA.resize(n * n / size);
-        localB.resize(n * n / size);
-
-        MPI_Scatter(A.data(), blockSize, MPI_DOUBLE, localA.data(), blockSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        MPI_Scatter(B.data(), blockSize, MPI_DOUBLE, localB.data(), blockSize, MPI_DOUBLE, 0, MPI_COMM_WORLD);
     }
 
-    localC.resize(n * n / size);
+    MPI_Scatter(A.data(), rows_per_process * n, MPI_INT,
+        local_A.data(), rows_per_process * n, MPI_INT,
+        0, MPI_COMM_WORLD);
 
-    vector<double> B_T(n * n);
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            B_T[j * n + i] = B[i * n + j];
-        }
-    }
+    MPI_Bcast(B.data(), n * n, MPI_INT, 0, MPI_COMM_WORLD);
 
-    int localRows = blockSize / n; 
-    for (int i = 0; i < localRows; i++) {
-        for (int j = 0; j < n; j++) {
-            for (int k = 0; k < n; k++) {
-                localC[i * n + j] += localA[i * n + k] * B_T[j * n + k];
+    for (int i = 0; i < rows_per_process; ++i) {
+        for (int j = 0; j < n; ++j) {
+            local_C[i * n + j] = 0;
+            for (int k = 0; k < n; ++k) {
+                local_C[i * n + j] += local_A[i * n + k] * B[k * n + j];
             }
         }
     }
+
+    MPI_Gather(local_C.data(), rows_per_process * n, MPI_INT,
+        C.data(), rows_per_process * n, MPI_INT,
+        0, MPI_COMM_WORLD);
 
     if (rank == 0) {
-        MPI_Gather(localC.data(), n * n / size, MPI_DOUBLE, C.data(), n * n / size, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        cout << "Result matrix C:" << endl;
+
+        std::cout << "\nMatrix A:" << std::endl;
         for (int i = 0; i < n; ++i) {
             for (int j = 0; j < n; ++j) {
-                cout << C[i * n + j] << " ";
+                std::cout << A[i * n + j] << " ";
             }
-            cout << endl;
+            std::cout << std::endl;
+        }
+        std::cout << "\nMatrix B:" << std::endl;
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                std::cout << B[i * n + j] << " ";
+            }
+            std::cout << std::endl;
+        }
+        std::cout << "Result matrix C:" << std::endl;
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                std::cout << C[i * n + j] << " ";
+            }
+            std::cout << std::endl;
         }
     }
 }
@@ -441,20 +452,20 @@ void task29(int rank, int size) {
     }
 }
 
+std::mutex cout_mutex;
+
 void task30(int rank, int size) {
     #pragma omp parallel for
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 2; ++i) {
+        std::lock_guard<std::mutex> lock(cout_mutex);
         std::cout << "Process " << rank << ", thread " << omp_get_thread_num() << ": iteration " << i << std::endl;
     }
 }
 
-std::mutex cout_mutex;
-
 void task31(int rank, int size, int n) {
     int total_threads = n * size;
 
-    // Параллельный блок OpenMP
-#pragma omp parallel num_threads(n)
+    #pragma omp parallel num_threads(n)
     {
         int thread_id = omp_get_thread_num();
         {
